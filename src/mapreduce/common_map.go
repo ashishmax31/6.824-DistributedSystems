@@ -65,6 +65,7 @@ func doMap(
 
 	fileContentStr := string(fileContents)
 	currentMapTaskRes := mapF(inFile, fileContentStr)
+
 	fileHandles := make(map[string]*os.File)
 	encoders := make(map[string]*json.Encoder)
 
@@ -90,16 +91,9 @@ func doMap(
 	}
 
 	for _, fd := range fileHandles {
+		fd.WriteString("\n")
 		fd.Close()
 	}
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }
 
 func ihash(s string) int {

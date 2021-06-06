@@ -93,8 +93,9 @@ func doReduce(
 	groupedRes := make(map[string][]string)
 
 	for _, kv := range intermediateRes {
-		if vals, found := groupedRes[kv.Key]; found {
-			vals = append(vals, kv.Value)
+		_, found := groupedRes[kv.Key]
+		if found {
+			groupedRes[kv.Key] = append(groupedRes[kv.Key], kv.Value)
 		} else {
 			groupedRes[kv.Key] = []string{kv.Value}
 		}
