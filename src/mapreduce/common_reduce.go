@@ -1,5 +1,24 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"io/ioutil"
+	"os"
+	"sort"
+	"strings"
+)
+
+type ByKey []KeyValue
+
+func (m ByKey) Len() int {
+	return len(m)
+}
+
+func (m ByKey) Swap(i, j int) {
+	m[i], m[j] = m[j], m[i]
+}
+func (m ByKey) Less(i, j int) bool { return m[i].Key < m[j].Key }
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +63,61 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+	intermediateRes := make([]KeyValue, 0)
+	intermediateFileNames := make([]string, 0)
+
+	for m := 0; m < nMap; m++ {
+		currFileName := reduceName(jobName, m, reduceTask)
+		intermediateFileNames = append(intermediateFileNames, currFileName)
+	}
+
+	for _, fileName := range intermediateFileNames {
+		fileContents, err := ioutil.ReadFile(fileName)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, line := range strings.Split(string(fileContents), "\n") {
+			var kv KeyValue
+			if len(line) > 0 {
+				err = json.Unmarshal([]byte(line), &kv)
+				if err != nil {
+					panic(err)
+				}
+				intermediateRes = append(intermediateRes, kv)
+			}
+		}
+	}
+
+	sort.Sort(ByKey(intermediateRes))
+	groupedRes := make(map[string][]string)
+
+	for _, kv := range intermediateRes {
+		if vals, found := groupedRes[kv.Key]; found {
+			vals = append(vals, kv.Value)
+		} else {
+			groupedRes[kv.Key] = []string{kv.Value}
+		}
+	}
+
+	keys := make([]string, 0, len(groupedRes))
+	for k := range groupedRes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	file, err := os.Create(outFile)
+	if err != nil {
+		panic(err)
+	}
+
+	enc := json.NewEncoder(file)
+	for _, key := range keys {
+		reduceRes := reduceF(key, groupedRes[key])
+		enc.Encode(KeyValue{Key: key,
+			Value: reduceRes,
+		})
+	}
+
+	file.Close()
 }
