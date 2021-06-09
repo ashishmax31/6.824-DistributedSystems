@@ -49,10 +49,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 }
 
 func handleMapPhase(n_other int, registerChan chan string, mapFiles []string, jobName string) {
-	workerChan := make(chan WorkerStatus)
+	workerChan := make(chan WorkerStatus, len(mapFiles))
+	workChan := make(chan DoTaskArgs, len(mapFiles))
 	done := make(chan struct{})
-	counter := new(counter)
-	counter.count = len(mapFiles)
 	// Feed the Worker chan
 	go func() {
 		for {
@@ -72,45 +71,27 @@ func handleMapPhase(n_other int, registerChan chan string, mapFiles []string, jo
 	var wg sync.WaitGroup
 	for index, fileName := range mapFiles {
 		wg.Add(1)
-		work := func(fileName string, ind int, wg *sync.WaitGroup) {
-			defer wg.Done()
-
-			getWorker := func() WorkerStatus {
-				workerAttr := <-workerChan
-				counter.mu.Lock()
-				counter.count--
-				counter.mu.Unlock()
-				return workerAttr
-			}
-
-			workerAttr := getWorker()
-			doTaskArgs := DoTaskArgs{
-				JobName:       jobName,
-				File:          fileName,
-				Phase:         mapPhase,
-				TaskNumber:    ind,
-				NumOtherPhase: n_other,
-			}
-			call(workerAttr.addr, "Worker.DoTask", doTaskArgs, nil)
-			counter.mu.RLock()
-			if counter.count > 0 {
-				workerChan <- workerAttr
-			}
-			counter.mu.RUnlock()
+		doTaskArgs := DoTaskArgs{
+			JobName:       jobName,
+			File:          fileName,
+			Phase:         mapPhase,
+			TaskNumber:    index,
+			NumOtherPhase: n_other,
 		}
-		go work(fileName, index, &wg)
+		submitWork(doTaskArgs, workChan)
+		go doWork(&wg, workChan, workerChan)
 	}
 
 	wg.Wait()
 
 	done <- struct{}{}
+	close(workChan)
 }
 
 func handleReducePhase(ntasks int, n_other int, registerChan chan string, jobName string) {
 	workerChan := make(chan WorkerStatus, ntasks)
+	workChan := make(chan DoTaskArgs, ntasks)
 	done := make(chan struct{})
-	counter := new(counter)
-	counter.count = ntasks
 	// Feed the Worker chan
 	go func() {
 		for {
@@ -130,33 +111,40 @@ func handleReducePhase(ntasks int, n_other int, registerChan chan string, jobNam
 	var wg sync.WaitGroup
 	for index := 0; index < ntasks; index++ {
 		wg.Add(1)
-		go func(ind int, wg *sync.WaitGroup) {
-			defer wg.Done()
-			getWorker := func() WorkerStatus {
-				workerAttr := <-workerChan
-				counter.mu.Lock()
-				counter.count--
-				counter.mu.Unlock()
-				return workerAttr
-			}
-
-			workerAttr := getWorker()
-			doTaskArgs := DoTaskArgs{
-				JobName:       jobName,
-				File:          "",
-				Phase:         reducePhase,
-				TaskNumber:    ind,
-				NumOtherPhase: n_other,
-			}
-			call(workerAttr.addr, "Worker.DoTask", doTaskArgs, nil)
-			counter.mu.RLock()
-			if counter.count > 0 {
-				workerChan <- workerAttr
-			}
-			counter.mu.RUnlock()
-		}(index, &wg)
+		doTaskArgs := DoTaskArgs{
+			JobName:       jobName,
+			File:          "",
+			Phase:         reducePhase,
+			TaskNumber:    index,
+			NumOtherPhase: n_other,
+		}
+		submitWork(doTaskArgs, workChan)
+		go doWork(&wg, workChan, workerChan)
 	}
 
 	wg.Wait()
 	done <- struct{}{}
+	close(workChan)
+}
+
+func submitWork(task_args DoTaskArgs, workChan chan DoTaskArgs) {
+	workChan <- task_args
+}
+
+func getWorker(workerChan chan WorkerStatus) WorkerStatus {
+	workerAttr := <-workerChan
+	return workerAttr
+}
+
+func doWork(wg *sync.WaitGroup, workChan chan DoTaskArgs, workerChan chan WorkerStatus) {
+	for work := range workChan {
+		worker := getWorker(workerChan)
+		res := call(worker.addr, "Worker.DoTask", work, nil)
+		if res {
+			wg.Done()
+		} else {
+			submitWork(work, workChan)
+		}
+		workerChan <- worker
+	}
 }
